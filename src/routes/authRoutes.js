@@ -18,6 +18,7 @@ import { formatDate } from '../utils/dateFormatter.js';
 import { appendUserActivity } from '../utils/activityLogger.js';
 
 const router = express.Router();
+const exposeDevOtp = String(process.env.EXPOSE_DEV_OTP || '').toLowerCase() === 'true';
 
 // Check if an email is already registered
 router.get('/email-available', async (req, res) => {
@@ -28,7 +29,7 @@ router.get('/email-available', async (req, res) => {
     return res.json({ available: !exists });
   } catch (e) {
     console.error(e);
-    res.status(500).json({ message: 'Server error' });
+    res.status(500).json({ message: 'Unable to verify email availability' });
   }
 });
 
@@ -56,21 +57,19 @@ router.post('/register/start', async (req, res) => {
     try {
       await sendOtpEmail(email, code);
     } catch (mailErr) {
-      if (isProduction) {
-        console.error('Failed to send OTP email:', mailErr);
-        return res.status(500).json({ message: 'Failed to send OTP. Please try again later.' });
-      }
+      console.error('Failed to send OTP email:', mailErr);
+      return res.status(500).json({ message: 'Failed to send OTP email. Please try again later.' });
     }
 
     res.status(201).json({
       transactionId,
       email,
       expiresInSeconds: OTP_EXPIRY_SECONDS,
-      ...(isProduction ? {} : { devCode: pendingRegistrations.get(transactionId).code })
+      ...(exposeDevOtp ? { devCode: pendingRegistrations.get(transactionId).code } : {})
     });
   } catch (e) {
     console.error(e);
-    res.status(500).json({ message: 'Server error' });
+    res.status(500).json({ message: e?.message || 'Server error' });
   }
 });
 
@@ -168,7 +167,7 @@ router.post('/register/resend', async (req, res) => {
       }
     }
 
-    res.json({ expiresInSeconds: OTP_EXPIRY_SECONDS, ...(isProduction ? {} : { devCode: entry.code }) });
+    res.json({ expiresInSeconds: OTP_EXPIRY_SECONDS, ...(exposeDevOtp ? { devCode: entry.code } : {}) });
   } catch (e) {
     console.error(e);
     res.status(500).json({ message: 'Server error' });
@@ -285,7 +284,7 @@ router.post('/forgot-password', async (req, res) => {
       transactionId,
       email: user.email,
       expiresInSeconds: OTP_EXPIRY_SECONDS,
-      ...(isProduction ? {} : { devCode: code })
+      ...(exposeDevOtp ? { devCode: code } : {})
     });
   } catch (e) {
     console.error(e);
@@ -345,7 +344,7 @@ router.post('/forgot-password/resend', async (req, res) => {
       }
     }
 
-    res.json({ expiresInSeconds: OTP_EXPIRY_SECONDS, ...(isProduction ? {} : { devCode: entry.code }) });
+    res.json({ expiresInSeconds: OTP_EXPIRY_SECONDS, ...(exposeDevOtp ? { devCode: entry.code } : {}) });
   } catch (e) {
     console.error(e);
     res.status(500).json({ message: 'Server error' });
