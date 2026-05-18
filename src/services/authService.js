@@ -1,5 +1,30 @@
 import { supabaseAdmin, supabaseAnon, supabaseUrl, supabaseServiceKey } from '../config/database.js';
 
+async function listAllUsers() {
+  const users = [];
+  let page = 1;
+  const perPage = 1000;
+
+  while (page <= 100) {
+    const res = await supabaseAdmin.auth.admin.listUsers({ page, perPage });
+    const batch = Array.isArray(res?.data?.users)
+      ? res.data.users
+      : Array.isArray(res?.data)
+        ? res.data
+        : Array.isArray(res?.users)
+          ? res.users
+          : [];
+
+    if (!Array.isArray(batch) || batch.length === 0) break;
+    users.push(...batch);
+
+    if (batch.length < perPage) break;
+    page += 1;
+  }
+
+  return users;
+}
+
 /**
  * Get user from authorization header
  */
@@ -62,16 +87,28 @@ export async function emailExists(rawEmail) {
   const email = String(rawEmail || '').trim().toLowerCase();
   if (!email) return false;
   try {
-    // Prefer Supabase Admin SDK if available (avoids relying on global `fetch` which may be missing on some Node versions)
+    // First check the application database, where profile rows are created for confirmed users.
+    const { data: profileRow, error: profileError } = await supabaseAdmin
+      .from('profiles')
+      .select('id')
+      .eq('email', email)
+      .maybeSingle();
+
+    if (profileError) {
+      throw profileError;
+    }
+
+    if (profileRow) {
+      return true;
+    }
+
+    // Prefer Supabase Admin SDK and page through the full user list so duplicate checks do not miss older accounts.
     try {
       if (supabaseAdmin && supabaseAdmin.auth && supabaseAdmin.auth.admin && typeof supabaseAdmin.auth.admin.listUsers === 'function') {
-        const res = await supabaseAdmin.auth.admin.listUsers();
-        // `res` shape may vary between SDK versions. Try common locations.
-        const users = (res?.data && (Array.isArray(res.data.users) ? res.data.users : (Array.isArray(res.data) ? res.data : []))) || (Array.isArray(res?.users) ? res.users : []);
+        const users = await listAllUsers();
         if (Array.isArray(users) && users.length > 0) {
           return users.some(u => (u.email || '').toLowerCase() === email);
         }
-        // If SDK returned no users, fallthrough to other checks below
       }
     } catch (sdkErr) {
       console.error('[emailExists] Supabase admin SDK listUsers error:', sdkErr);
@@ -89,7 +126,7 @@ export async function emailExists(rawEmail) {
         },
       });
       if (!resp.ok) {
-        console.error('[emailExists] Admin REST error status:', resp.status);
+        throw new Error(`[emailExists] Admin REST error status: ${resp.status}`);
       } else {
         const json = await resp.json().catch(() => ({ users: [] }));
         const users = Array.isArray(json?.users) ? json.users : (Array.isArray(json) ? json : []);
@@ -102,19 +139,17 @@ export async function emailExists(rawEmail) {
     // As a last-resort, try to iterate listUsers with pagination (if SDK supports parameters)
     try {
       if (supabaseAdmin && supabaseAdmin.auth && supabaseAdmin.auth.admin && typeof supabaseAdmin.auth.admin.listUsers === 'function') {
-        // Try with a paginated call if supported by SDK (some versions accept { page, per_page })
-        const res2 = await supabaseAdmin.auth.admin.listUsers({ page: 1, per_page: 100 });
-        const users = (res2?.data && (Array.isArray(res2.data.users) ? res2.data.users : (Array.isArray(res2.data) ? res2.data : []))) || (Array.isArray(res2?.users) ? res2.users : []);
+        const users = await listAllUsers();
         return Array.isArray(users) && users.some(u => (u.email || '').toLowerCase() === email);
       }
     } catch (e) {
       console.error('[emailExists] fallback SDK paginated listUsers error:', e);
     }
 
-    return false;
+    throw new Error('[emailExists] Unable to verify email existence');
   } catch (err) {
     console.error('[emailExists] error:', err);
-    return false;
+    throw err;
   }
 }
 
@@ -128,8 +163,7 @@ export async function getUserByEmail(rawEmail) {
     // Prefer SDK
     try {
       if (supabaseAdmin && supabaseAdmin.auth && supabaseAdmin.auth.admin && typeof supabaseAdmin.auth.admin.listUsers === 'function') {
-        const res = await supabaseAdmin.auth.admin.listUsers();
-        const users = (res?.data && (Array.isArray(res.data.users) ? res.data.users : (Array.isArray(res.data) ? res.data : []))) || (Array.isArray(res?.users) ? res.users : []);
+        const users = await listAllUsers();
         const user = Array.isArray(users) ? users.find(u => (u.email || '').toLowerCase() === email) : null;
         if (user) return user;
       }
@@ -148,8 +182,7 @@ export async function getUserByEmail(rawEmail) {
         },
       });
       if (!resp.ok) {
-        console.error('[getUserByEmail] Admin REST error status:', resp.status);
-        return null;
+        throw new Error(`[getUserByEmail] Admin REST error status: ${resp.status}`);
       }
       const json = await resp.json().catch(() => ({ users: [] }));
       const users = Array.isArray(json?.users) ? json.users : (Array.isArray(json) ? json : []);
@@ -160,8 +193,7 @@ export async function getUserByEmail(rawEmail) {
     // Try a paginated SDK call as a last option
     try {
       if (supabaseAdmin && supabaseAdmin.auth && supabaseAdmin.auth.admin && typeof supabaseAdmin.auth.admin.listUsers === 'function') {
-        const res2 = await supabaseAdmin.auth.admin.listUsers({ page: 1, per_page: 100 });
-        const users = (res2?.data && (Array.isArray(res2.data.users) ? res2.data.users : (Array.isArray(res2.data) ? res2.data : []))) || (Array.isArray(res2?.users) ? res2.users : []);
+        const users = await listAllUsers();
         const user = Array.isArray(users) ? users.find(u => (u.email || '').toLowerCase() === email) : null;
         return user || null;
       }
@@ -169,9 +201,9 @@ export async function getUserByEmail(rawEmail) {
       console.error('[getUserByEmail] fallback SDK paginated listUsers error:', e);
     }
 
-    return null;
+    throw new Error('[getUserByEmail] Unable to verify user existence');
   } catch (err) {
     console.error('[getUserByEmail] error:', err);
-    return null;
+    throw err;
   }
 }
